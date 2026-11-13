@@ -1,8 +1,9 @@
 """
 rag_pipeline.py - Core RAG and Guardrail Pipeline for Zyro Dynamics HR Assistant.
 
-Preserves the exact architecture, models, prompts, chunking, retrieval, and
-guardrail logic from the original Jupyter Notebook (code.ipynb).
+Preserves the exact architecture, retrieval logic, prompts, chunking, and guardrails.
+Supports high-speed free Groq models (openai/gpt-oss-120b, openai/gpt-oss-20b)
+as well as Google GenAI (gemini-3.7-flash).
 """
 
 import os
@@ -13,16 +14,20 @@ from langchain_community.document_loaders import PyPDFDirectoryLoader, PyPDFLoad
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+
+# LLM Providers
+from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Load environment variables
 load_dotenv(override=True)
 
 # --- Original Notebook Constants ---
-LLM_Provider = "google-genai"
-LLM_Model = "gemini-3.7-flash"
+DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
 CORPUS_PATH = "./zyro-dynamics-hr-corpus"
 VECTORSTORE_DIR = "./vectorstore/faiss_index"
 
@@ -100,7 +105,6 @@ def load_or_build_vectorstore(
                 embedding_model,
                 allow_dangerous_deserialization=True
             )
-            # Estimate doc count from index or corpus
             corpus_files = [f for f in os.listdir(corpus_path) if f.lower().endswith(".pdf")] if os.path.exists(corpus_path) else []
             return vectorstore, len(corpus_files)
         except Exception as e:
@@ -147,33 +151,56 @@ def add_pdf_to_vectorstore(
     return len(documents), len(chunks)
 
 
-def get_llm_model(api_key: Optional[str] = None) -> ChatGoogleGenerativeAI:
+def get_llm_model(
+    provider: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model_name: Optional[str] = None
+) -> Any:
     """
-    Initializes ChatGoogleGenerativeAI using the exact parameters from notebook:
-    model='gemini-3.7-flash', temperature=0.7, max_tokens=500.
+    Initializes ChatGroq or ChatGoogleGenerativeAI.
+    Defaults to Groq (openai/gpt-oss-120b) when Groq key is present.
     """
-    resolved_key = (
-        api_key
-        or os.getenv("LLM_API_KEY")
-        or os.getenv("GOOGLE_API_KEY")
-        or os.getenv("GEMINI_API_KEY")
-    )
-    if not resolved_key:
-        raise ValueError("Missing Google GenAI API Key. Please provide LLM_API_KEY.")
+    # Detect provider based on key format or setting
+    groq_env_key = os.getenv("GROQ_API_KEY")
+    gemini_env_key = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
-    return ChatGoogleGenerativeAI(
-        model="gemini-3.7-flash",
-        google_api_key=resolved_key,
-        temperature=0.7,
-        max_tokens=500
-    )
+    selected_provider = provider or os.getenv("LLM_PROVIDER")
+    if not selected_provider:
+        if api_key and api_key.startswith("gsk_"):
+            selected_provider = "groq"
+        elif groq_env_key:
+            selected_provider = "groq"
+        else:
+            selected_provider = "google-genai"
+
+    if selected_provider.lower() == "groq":
+        key = api_key or groq_env_key
+        if not key:
+            raise ValueError("Missing Groq API Key. Please provide GROQ_API_KEY.")
+        model = model_name or os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)
+        return ChatGroq(
+            model=model,
+            groq_api_key=key,
+            temperature=0.7,
+            max_tokens=500
+        )
+    else:
+        key = api_key or gemini_env_key
+        if not key:
+            raise ValueError("Missing Google GenAI API Key. Please provide LLM_API_KEY.")
+        model = model_name or DEFAULT_GEMINI_MODEL
+        return ChatGoogleGenerativeAI(
+            model=model,
+            google_api_key=key,
+            temperature=0.7,
+            max_tokens=500
+        )
 
 
-def rag_chain(question: str, retriever: Any, llm_model: ChatGoogleGenerativeAI) -> Dict[str, Any]:
+def rag_chain(question: str, retriever: Any, llm_model: Any) -> Dict[str, Any]:
     """
-    Exact RAG Chain from notebook:
+    Exact RAG Chain:
     Retrieves top 3 docs, formats context, invokes RAG_PROMPT with llm_model.
-    Preserves exact output format and returns sources for UI citation.
     """
     docs = retriever.invoke(question)
     context = foramt_docs(docs)
@@ -182,9 +209,9 @@ def rag_chain(question: str, retriever: Any, llm_model: ChatGoogleGenerativeAI) 
     return {"answer": answer, "sources": docs}
 
 
-def ask_bot(question: str, retriever: Any, llm_model: ChatGoogleGenerativeAI) -> Dict[str, Any]:
+def ask_bot(question: str, retriever: Any, llm_model: Any) -> Dict[str, Any]:
     """
-    Exact Guardrail + RAG implementation from notebook:
+    Exact Guardrail + RAG implementation:
     Evaluates GUARDIAL_PROMPT to classify IN_SCOPE vs OUT_OF_SCOPE.
     Returns REFUSAL_MESSAGE if OUT_OF_SCOPE; otherwise invokes rag_chain.
     """
@@ -201,4 +228,3 @@ def ask_bot(question: str, retriever: Any, llm_model: ChatGoogleGenerativeAI) ->
     result = rag_chain(question, retriever, llm_model)
     result["verdict"] = "IN_SCOPE"
     return result
-

@@ -6,16 +6,15 @@ An enterprise-grade, retrieval-augmented generation (RAG) assistant for **Zyro D
 
 ## 📌 Architectural Overview
 
-This application preserves 100% of the original RAG pipeline and architecture developed in `code.ipynb`:
+This application preserves the exact RAG pipeline, retrieval logic, prompts, and guardrails developed in `code.ipynb`, enhanced with high-speed inference via **Groq** and **Google GenAI**:
 
 | Component | Specification |
 | :--- | :--- |
-| **LLM Provider** | Google GenAI (`google-genai` / `langchain-google-genai`) |
-| **Foundation Model** | `gemini-3.7-flash` (temperature: `0.7`, max tokens: `500`) |
+| **LLM Inference** | **Groq** (Default: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`) & **Google GenAI** (`gemini-3.7-flash`) |
 | **Embedding Model** | `sentence-transformers/all-MiniLM-L6-v2` (384-dimensional dense vectors) |
 | **Document Loaders** | `PyPDFDirectoryLoader` & `PyPDFLoader` (`pypdf`) |
 | **Chunking Strategy** | `RecursiveCharacterTextSplitter` (chunk size: `800`, overlap: `100`) |
-| **Vector Database** | `FAISS` (Facebook AI Similarity Search) |
+| **Vector Database** | `FAISS` (Facebook AI Similarity Search) with disk caching |
 | **Retrieval Strategy** | Dense similarity search (`k = 3`) |
 | **Safety Guardrail** | Scope Classifier Prompt (enforces `IN_SCOPE` vs `OUT_OF_SCOPE` refusal) |
 
@@ -25,8 +24,8 @@ This application preserves 100% of the original RAG pipeline and architecture de
 
 ```text
 Intelligent RAG/
-├── app.py                     # Streamlit application with custom SaaS dark theme
-├── rag_pipeline.py            # Preserved RAG pipeline, retriever, LLM, and guardrails
+├── app.py                     # Streamlit application with custom SaaS dark theme & provider switcher
+├── rag_pipeline.py            # Preserved RAG pipeline, retriever, Groq/Gemini LLM, and guardrails
 ├── requirements.txt           # Production package dependencies
 ├── .env.example               # Template for required environment variables
 ├── .gitignore                 # Protects secrets, cache, and upload files
@@ -55,18 +54,15 @@ Intelligent RAG/
 
 ### 1. Prerequisites
 - Python 3.10 to 3.14
-- A Google AI Studio API Key ([Get an API Key](https://aistudio.google.com/))
+- A Groq API Key ([Get a free Groq API Key](https://console.groq.com/)) or Google Gemini API Key
 
 ### 2. Clone and Create Virtual Environment
 ```bash
-# Clone the repository
 git clone <your-repo-url>
 cd "Intelligent RAG"
 
-# Create a virtual environment
 python -m venv venv
 
-# Activate the virtual environment
 # Windows (PowerShell):
 .\venv\Scripts\Activate.ps1
 # macOS / Linux:
@@ -85,9 +81,14 @@ copy .env.example .env      # Windows
 cp .env.example .env        # macOS / Linux
 ```
 
-Edit `.env` and set your Google Gemini API key:
+Configure your API key in `.env`:
 ```env
-LLM_API_KEY=AIzaSy...your_gemini_api_key_here
+# Groq (Free, ultra-fast inference)
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=openai/gpt-oss-120b
+
+# Or Google Gemini
+LLM_API_KEY=AIzaSy...
 ```
 
 ### 5. Launch the Application
@@ -100,38 +101,25 @@ Open your browser at `http://localhost:8501`.
 
 ## ☁️ Streamlit Community Cloud Deployment
 
-Follow these steps to deploy this application to **Streamlit Community Cloud**:
-
 ### 1. Push to GitHub
-Ensure the project is committed to your GitHub repository:
 ```bash
 git add .
-git commit -m "Deploy: Zyro Dynamics HR RAG Assistant"
+git commit -m "Support Groq free inference model and update Streamlit UI"
 git push origin main
 ```
 
-### 2. Connect Repository on Streamlit Cloud
-1. Navigate to [share.streamlit.io](https://share.streamlit.io/) and sign in with GitHub.
-2. Click **"New app"**.
-3. Select your repository, branch (`main`), and set the main file path to:
-   ```text
-   app.py
-   ```
-
-### 3. Configure Secrets on Streamlit Cloud
-Under **Advanced settings** ➔ **Secrets**, paste your API key in TOML format:
+### 2. Configure Secrets on Streamlit Cloud
+Under your app's **Advanced settings** ➔ **Secrets**, paste:
 
 ```toml
-LLM_API_KEY = "AIzaSy...your_gemini_api_key_here"
+GROQ_API_KEY = "gsk_..."
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+# Optional: Google Gemini fallback
+LLM_API_KEY = "AIzaSy..."
 ```
-*(Alternatively, you can also provide `GOOGLE_API_KEY = "..."`)*
 
-Click **Deploy**!
-
-### 4. Handling Vector Database in Cloud
-The default corpus (`zyro-dynamics-hr-corpus/`) contains 11 concise PDFs (~100 KB total). When deployed:
-- If `vectorstore/faiss_index` is omitted or ignored by git, the application automatically builds the FAISS index from the PDFs in `zyro-dynamics-hr-corpus/` on the first startup (~10–15 seconds) and caches it in memory using Streamlit's `@st.cache_resource`.
-- Subsequent user interactions and queries retrieve from memory in milliseconds.
+Click **Save** or **Deploy**! Streamlit Community Cloud will automatically pull the latest commit and redeploy.
 
 ---
 
@@ -141,7 +129,7 @@ The pipeline includes an active guardrail classifier (`ask_bot`) that evaluates 
 
 1. **In-Scope Queries**:
    - Company policies, leave entitlements, health insurance, compensation, POSH, WFH rules, performance reviews.
-   - Handled via `rag_chain` with `FAISS` retrieval (top-3 chunks) + Gemini 3.7 Flash generation.
+   - Handled via `rag_chain` with `FAISS` retrieval (top-3 chunks) + LLM generation.
    - Verified source citations (document name + page number + snippet) are rendered in the UI.
 
 2. **Out-of-Scope Queries**:
@@ -155,12 +143,13 @@ The pipeline includes an active guardrail classifier (`ask_bot`) that evaluates 
 
 | Variable | Scope | Description |
 | :--- | :--- | :--- |
-| `LLM_API_KEY` | `.env` / Streamlit Secrets | Primary Google Gemini API key used by `ChatGoogleGenerativeAI` |
+| `GROQ_API_KEY` | `.env` / Streamlit Secrets | Groq API Key (starts with `gsk_`) |
+| `GROQ_MODEL` | `.env` / Streamlit Secrets | Groq model id (default: `openai/gpt-oss-120b`) |
+| `LLM_API_KEY` | `.env` / Streamlit Secrets | Google Gemini API key used by `ChatGoogleGenerativeAI` |
 | `GOOGLE_API_KEY` | `.env` / Streamlit Secrets | Standard fallback alias for Google GenAI |
-| `custom_api_key` | Streamlit UI Sidebar | Allows on-the-fly override of the API key directly in the web UI |
+| `custom_groq_key` | Streamlit UI Sidebar | Allows on-the-fly entry of the Groq API key in the UI |
 
 ---
 
 ## 📄 License
 Internal proprietary tool for Zyro Dynamics HR Operations.
-

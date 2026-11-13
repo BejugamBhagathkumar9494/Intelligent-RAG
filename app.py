@@ -2,7 +2,7 @@
 app.py - Enterprise Streamlit Web Application for Zyro Dynamics HR RAG Assistant.
 
 Preserves the exact notebook RAG architecture, retrieval logic, prompts, and guardrails.
-Provides a modern, professional AI dashboard interface with custom dark theme.
+Supports ultra-fast free Groq models (openai/gpt-oss-120b) and Google GenAI.
 """
 
 import os
@@ -15,8 +15,9 @@ import rag_pipeline
 from rag_pipeline import (
     CORPUS_PATH,
     VECTORSTORE_DIR,
-    LLM_Model,
-    LLM_Provider,
+    DEFAULT_PROVIDER,
+    DEFAULT_GROQ_MODEL,
+    DEFAULT_GEMINI_MODEL,
     get_embedding_model,
     load_or_build_vectorstore,
     add_pdf_to_vectorstore,
@@ -183,26 +184,6 @@ CUSTOM_CSS = """
         margin-bottom: 20px;
     }
 
-    /* Suggested Question Buttons */
-    .sample-pill {
-        display: inline-block;
-        background: #1e293b;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        color: #cbd5e1;
-        padding: 8px 14px;
-        border-radius: 20px;
-        font-size: 0.84rem;
-        margin: 4px;
-        transition: all 0.2s ease;
-        text-decoration: none;
-        cursor: pointer;
-    }
-    .sample-pill:hover {
-        background: #27354f;
-        border-color: #3b82f6;
-        color: #ffffff;
-    }
-
     /* Source Citation Card */
     .source-box {
         background: #0f172a;
@@ -251,7 +232,6 @@ CUSTOM_CSS = """
         padding: 0.75rem 0 !important;
     }
 
-    /* Streamlit button hover enhancements */
     div.stButton > button {
         border-radius: 8px;
         font-weight: 500;
@@ -308,27 +288,34 @@ if "pending_query" not in st.session_state:
 # -----------------------------------------------------------------------------
 # 5. API Key Resolution (Streamlit Secrets, .env, or UI input)
 # -----------------------------------------------------------------------------
-def get_configured_api_key() -> str:
-    """Resolves API key with secure fallback chain."""
-    # 1. Sidebar manual input (highest precedence)
-    if "custom_api_key" in st.session_state and st.session_state.custom_api_key.strip():
-        return st.session_state.custom_api_key.strip()
-
-    # 2. Streamlit Cloud Secrets
-    try:
-        if "LLM_API_KEY" in st.secrets:
-            return st.secrets["LLM_API_KEY"]
-        if "GOOGLE_API_KEY" in st.secrets:
-            return st.secrets["GOOGLE_API_KEY"]
-    except Exception:
-        pass
-
-    # 3. Environment variables / .env
-    env_key = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    return env_key or ""
-
-
-configured_key = get_configured_api_key()
+def get_provider_and_key(selected_provider: str) -> tuple[str, str]:
+    """Resolves provider and API key with fallback chain."""
+    if selected_provider == "Groq":
+        # Check custom sidebar input
+        if "custom_groq_key" in st.session_state and st.session_state.custom_groq_key.strip():
+            return "groq", st.session_state.custom_groq_key.strip()
+        # Check Streamlit Cloud Secrets
+        try:
+            if "GROQ_API_KEY" in st.secrets:
+                return "groq", st.secrets["GROQ_API_KEY"]
+        except Exception:
+            pass
+        # Check .env / os.getenv
+        key = os.getenv("GROQ_API_KEY", "")
+        return "groq", key
+    else:
+        # Google GenAI
+        if "custom_gemini_key" in st.session_state and st.session_state.custom_gemini_key.strip():
+            return "google-genai", st.session_state.custom_gemini_key.strip()
+        try:
+            if "LLM_API_KEY" in st.secrets:
+                return "google-genai", st.secrets["LLM_API_KEY"]
+            if "GOOGLE_API_KEY" in st.secrets:
+                return "google-genai", st.secrets["GOOGLE_API_KEY"]
+        except Exception:
+            pass
+        key = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
+        return "google-genai", key
 
 
 # -----------------------------------------------------------------------------
@@ -353,45 +340,72 @@ with st.sidebar:
         """
         <div class="sidebar-card">
             <h4>System Overview</h4>
-            Enterprise HR knowledge retrieval agent powered by Google Gemini and FAISS vector index.
+            Enterprise HR knowledge retrieval agent powered by FAISS vector index & high-speed LLMs.
             Answers are strictly grounded in verified company policy documents with safety guardrails.
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    # B. API Key Configuration
-    st.markdown("### 🔑 Configuration")
-    if configured_key:
+    # B. LLM Provider Selection & Configuration
+    st.markdown("### ⚙️ LLM Provider")
+    
+    # Default to Groq if Groq key exists in env/secrets
+    has_groq_key = bool(os.getenv("GROQ_API_KEY"))
+    provider_options = ["Groq (Free & Fast)", "Google GenAI (Gemini)"]
+    default_index = 0 if has_groq_key else 1
+
+    provider_choice = st.selectbox(
+        "Inference Engine",
+        options=provider_options,
+        index=default_index,
+        help="Select between Groq high-speed free inference or Google Gemini."
+    )
+    is_groq = "Groq" in provider_choice
+
+    if is_groq:
+        current_provider, current_key = get_provider_and_key("Groq")
+        model_options = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+        selected_model = st.selectbox("Groq Model", options=model_options, index=0)
+    else:
+        current_provider, current_key = get_provider_and_key("Gemini")
+        selected_model = DEFAULT_GEMINI_MODEL
+        st.caption(f"Model: `{selected_model}`")
+
+    # API Key status
+    if current_key:
         st.markdown(
-            '<div style="margin-bottom: 8px;"><span class="status-online"></span><span style="font-size:0.85rem; color:#10b981; font-weight:600;">API Key Configured</span></div>',
+            '<div style="margin-top: 6px; margin-bottom: 8px;"><span class="status-online"></span><span style="font-size:0.85rem; color:#10b981; font-weight:600;">API Key Configured</span></div>',
             unsafe_allow_html=True
         )
     else:
         st.markdown(
-            '<div style="margin-bottom: 8px;"><span class="status-warning"></span><span style="font-size:0.85rem; color:#f59e0b; font-weight:600;">API Key Required</span></div>',
+            '<div style="margin-top: 6px; margin-bottom: 8px;"><span class="status-warning"></span><span style="font-size:0.85rem; color:#f59e0b; font-weight:600;">API Key Required</span></div>',
             unsafe_allow_html=True
         )
 
-    # Allow key override / entry
+    # Allow key override in UI
+    key_field_name = "Groq API Key (gsk_...)" if is_groq else "Gemini API Key"
+    state_key_name = "custom_groq_key" if is_groq else "custom_gemini_key"
+    
     api_key_input = st.text_input(
-        "Gemini API Key",
-        value=st.session_state.get("custom_api_key", ""),
+        key_field_name,
+        value=st.session_state.get(state_key_name, ""),
         type="password",
-        placeholder="Enter AI Studio API Key...",
+        placeholder=f"Enter {key_field_name}...",
         help="Reads from .env or Streamlit Secrets by default. Provide key here to override."
     )
-    if api_key_input != st.session_state.get("custom_api_key", ""):
-        st.session_state.custom_api_key = api_key_input
+    if api_key_input != st.session_state.get(state_key_name, ""):
+        st.session_state[state_key_name] = api_key_input
         st.rerun()
 
     # C. Pipeline Specs Badges
-    st.markdown("### ⚙️ Pipeline Specifications")
+    st.markdown("### 🧩 Pipeline Specs")
     st.markdown(
         f"""
         <div>
-            <span class="spec-badge">LLM: {LLM_Model}</span>
-            <span class="spec-badge">Provider: {LLM_Provider}</span>
+            <span class="spec-badge">Engine: {'Groq' if is_groq else 'Google GenAI'}</span>
+            <span class="spec-badge">Model: {selected_model}</span>
             <span class="spec-badge">Embed: MiniLM-L6-v2</span>
             <span class="spec-badge">Vector DB: FAISS (top-k=3)</span>
             <span class="spec-badge">Chunk: 800 (overlap: 100)</span>
@@ -406,7 +420,6 @@ with st.sidebar:
     # D. Document Management
     st.markdown("### 📂 Policy Corpus")
     
-    # List Default Corpus PDFs
     corpus_files = []
     if os.path.exists(CORPUS_PATH):
         corpus_files = sorted([f for f in os.listdir(CORPUS_PATH) if f.lower().endswith(".pdf")])
@@ -500,7 +513,7 @@ if not st.session_state.messages:
         <div class="welcome-banner">
             <div class="welcome-title">How can I assist you with HR policies today?</div>
             <div class="welcome-desc">
-                I can provide authoritative, context-grounded answers based on official Zyro Dynamics handbooks,
+                I provide authoritative, context-grounded answers based on official Zyro Dynamics handbooks,
                 leave rules, medical coverage, IT standards, and compensation structures.
             </div>
             <div style="font-weight: 600; color: #94a3b8; font-size: 0.84rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;">
@@ -511,7 +524,7 @@ if not st.session_state.messages:
         unsafe_allow_html=True
     )
 
-    # 4 Quick Sample Queries (derived from test.csv)
+    # 5 Quick Sample Queries (derived from test.csv)
     sample_queries = [
         "How does my Earned Leave accrue every month?",
         "What medical insurance coverage does the company provide?",
@@ -523,7 +536,6 @@ if not st.session_state.messages:
     cols = st.columns(len(sample_queries))
     for idx, (col, query_text) in enumerate(zip(cols, sample_queries)):
         with col:
-            # Button for each suggestion
             button_label = query_text
             if len(button_label) > 36:
                 button_label = button_label[:34] + "..."
@@ -575,7 +587,6 @@ for msg in st.session_state.messages:
 # -----------------------------------------------------------------------------
 # 9. Handle User Input & RAG Execution
 # -----------------------------------------------------------------------------
-# Check if a suggestion was clicked or manual text entered
 user_input = st.chat_input("Ask a question about Zyro Dynamics HR policies...")
 active_query = None
 
@@ -592,11 +603,12 @@ if active_query:
         st.markdown(active_query)
 
     # 2. Check API Key validity
-    current_key = get_configured_api_key()
+    current_provider, current_key = get_provider_and_key("Groq" if is_groq else "Gemini")
     if not current_key:
+        provider_name = "Groq" if is_groq else "Google Gemini"
         error_msg = (
-            "⚠️ **Gemini API Key Missing**: Please provide your Google Gemini API Key "
-            "in the left sidebar configuration, or configure `LLM_API_KEY` in your `.env` file."
+            f"⚠️ **{provider_name} API Key Missing**: Please provide your {provider_name} API Key "
+            f"in the left sidebar configuration, or configure it in your `.env` / Streamlit Secrets."
         )
         with st.chat_message("assistant", avatar="🏢"):
             st.error(error_msg)
@@ -611,7 +623,11 @@ if active_query:
         with st.chat_message("assistant", avatar="🏢"):
             with st.spinner("Reviewing HR policies & synthesizing grounded response..."):
                 try:
-                    llm = get_llm_model(api_key=current_key)
+                    llm = get_llm_model(
+                        provider=current_provider,
+                        api_key=current_key,
+                        model_name=selected_model
+                    )
                     # Invoke exact notebook ask_bot function
                     rag_result = ask_bot(active_query, retriever, llm)
                     
@@ -659,23 +675,7 @@ if active_query:
 
                 except Exception as ex:
                     err_str = str(ex)
-                    friendly_error = ""
-                    if "PERMISSION_DENIED" in err_str or "403" in err_str:
-                        friendly_error = (
-                            "⛔ **API Key Authorization Error**: The configured Google GenAI API key "
-                            "was rejected (`403 PERMISSION_DENIED`). This typically happens if the associated "
-                            "Google Cloud project is suspended or expired.\n\n"
-                            "👉 **Resolution**: Please paste an active Gemini API Key into the **Gemini API Key** field "
-                            "in the left sidebar."
-                        )
-                    elif "INVALID_ARGUMENT" in err_str or "API_KEY_INVALID" in err_str:
-                        friendly_error = (
-                            "⛔ **Invalid API Key**: The provided API key is invalid.\n\n"
-                            "👉 Please verify your Gemini API key in the left sidebar or `.env`."
-                        )
-                    else:
-                        friendly_error = f"⚠️ **Error generating response**: {err_str}"
-
+                    friendly_error = f"⚠️ **Error generating response**: {err_str}"
                     st.error(friendly_error)
                     st.session_state.messages.append({
                         "role": "assistant",
@@ -683,4 +683,3 @@ if active_query:
                         "sources": [],
                         "verdict": "ERROR"
                     })
-
