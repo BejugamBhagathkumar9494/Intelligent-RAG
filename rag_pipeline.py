@@ -32,11 +32,16 @@ DEFAULT_TOP_K = 5
 CORPUS_PATH = "./zyro-dynamics-hr-corpus"
 VECTORSTORE_DIR = "./vectorstore/faiss_index"
 
-# --- Original Prompt Templates ---
+# --- RAG Prompt Template (Optimized for thorough, informative policy answers) ---
 RAG_PROMPT = ChatPromptTemplate.from_template(
-    """You are an HR assistant. Answer the question using ONLY the context below .If answer isn't in the context,say you dont't have that information.
-    context:{context},
-    question:{question}"""
+    """You are an HR assistant for Zyro Dynamics. Based on the company HR policy context provided below, provide a clear, helpful, comprehensive, and detailed answer to the employee's inquiry. Summarize and explain all relevant rules, entitlements, procedures, conditions, and tables found in the context. Only if the context contains no relevant information at all, state that you do not have that information.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:"""
 )
 
 GUARDIAL_PROMPT = ChatPromptTemplate.from_template(
@@ -182,7 +187,7 @@ def get_llm_model(
             model=model,
             groq_api_key=key,
             temperature=0.7,
-            max_tokens=500
+            max_tokens=1500
         )
     else:
         key = api_key or gemini_env_key
@@ -193,14 +198,14 @@ def get_llm_model(
             model=model,
             google_api_key=key,
             temperature=0.7,
-            max_tokens=500
+            max_tokens=1500
         )
 
 
 def rag_chain(question: str, retriever: Any, llm_model: Any) -> Dict[str, Any]:
     """
     Exact RAG Chain:
-    Retrieves top 3 docs, formats context, invokes RAG_PROMPT with llm_model.
+    Retrieves top docs, formats context, invokes RAG_PROMPT with llm_model.
     """
     docs = retriever.invoke(question)
     context = foramt_docs(docs)
