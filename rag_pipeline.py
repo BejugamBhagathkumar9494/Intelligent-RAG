@@ -1,0 +1,204 @@
+"""
+rag_pipeline.py - Core RAG and Guardrail Pipeline for Zyro Dynamics HR Assistant.
+
+Preserves the exact architecture, models, prompts, chunking, retrieval, and
+guardrail logic from the original Jupyter Notebook (code.ipynb).
+"""
+
+import os
+from typing import Any, Dict, List, Optional, Tuple
+from dotenv import load_dotenv
+
+from langchain_community.document_loaders import PyPDFDirectoryLoader, PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+
+# Load environment variables
+load_dotenv(override=True)
+
+# --- Original Notebook Constants ---
+LLM_Provider = "google-genai"
+LLM_Model = "gemini-3.7-flash"
+CORPUS_PATH = "./zyro-dynamics-hr-corpus"
+VECTORSTORE_DIR = "./vectorstore/faiss_index"
+
+# --- Original Prompt Templates ---
+RAG_PROMPT = ChatPromptTemplate.from_template(
+    """You are an HR assistant. Answer the question using ONLY the context below .If answer isn't in the context,say you dont't have that information.
+    context:{context},
+    question:{question}"""
+)
+
+GUARDIAL_PROMPT = ChatPromptTemplate.from_template(
+    """
+You are a scope classifier for an HR assistant. Decide whether the question
+below is something an HR assistant should answer (company leave policy,
+reimbursement, code of conduct, or other internal HR topics) or something
+out of scope (general knowledge, coding help, unrelated small talk, etc).
+Respond with exactly one word: IN_SCOPE or OUT_OF_SCOPE.
+question: {question}
+"""
+)
+
+REFUSAL_MESSAGE = (
+    "I'm an HR assistant and can only help with questions about company HR "
+    "policies (leave, reimbursement, code of conduct, etc.). I don't have "
+    "information to answer that question."
+)
+
+
+def foramt_docs(docs: List[Any]) -> str:
+    """Original doc formatting function from notebook."""
+    return ".\n\n".join(d.page_content for d in docs)
+
+
+def get_embedding_model() -> HuggingFaceEmbeddings:
+    """Initializes the exact HuggingFace embedding model from notebook."""
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+
+def get_text_splitter() -> RecursiveCharacterTextSplitter:
+    """Initializes the exact RecursiveCharacterTextSplitter from notebook."""
+    return RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=100
+    )
+
+
+def get_corpus_documents(corpus_path: str = CORPUS_PATH) -> List[Any]:
+    """Loads PDF documents from the corpus directory using PyPDFDirectoryLoader."""
+    loader = PyPDFDirectoryLoader(corpus_path)
+    return loader.load()
+
+
+def load_or_build_vectorstore(
+    corpus_path: str = CORPUS_PATH,
+    vectorstore_dir: str = VECTORSTORE_DIR,
+    embedding_model: Optional[HuggingFaceEmbeddings] = None
+) -> Tuple[FAISS, int]:
+    """
+    Loads persisted FAISS vectorstore if available; otherwise builds from corpus documents
+    using the exact notebook pipeline and persists it for fast subsequent reloads.
+    Returns (vectorstore, document_count).
+    """
+    if embedding_model is None:
+        embedding_model = get_embedding_model()
+
+    index_file = os.path.join(vectorstore_dir, "index.faiss")
+    pkl_file = os.path.join(vectorstore_dir, "index.pkl")
+
+    if os.path.exists(index_file) and os.path.exists(pkl_file):
+        try:
+            vectorstore = FAISS.load_local(
+                vectorstore_dir,
+                embedding_model,
+                allow_dangerous_deserialization=True
+            )
+            # Estimate doc count from index or corpus
+            corpus_files = [f for f in os.listdir(corpus_path) if f.lower().endswith(".pdf")] if os.path.exists(corpus_path) else []
+            return vectorstore, len(corpus_files)
+        except Exception as e:
+            print(f"Error loading local index, rebuilding: {e}")
+
+    # Build from scratch
+    documents = get_corpus_documents(corpus_path)
+    splitter = get_text_splitter()
+    chunks = splitter.split_documents(documents)
+    vectorstore = FAISS.from_documents(chunks, embedding_model)
+
+    try:
+        os.makedirs(vectorstore_dir, exist_ok=True)
+        vectorstore.save_local(vectorstore_dir)
+    except Exception as e:
+        print(f"Could not persist vectorstore to disk: {e}")
+
+    return vectorstore, len(documents)
+
+
+def add_pdf_to_vectorstore(
+    pdf_path: str,
+    vectorstore: FAISS,
+    vectorstore_dir: str = VECTORSTORE_DIR
+) -> Tuple[int, int]:
+    """
+    Processes an uploaded PDF using the exact document loader and chunking logic,
+    and appends it to the FAISS vectorstore.
+    Returns (num_pages_loaded, num_chunks_created).
+    """
+    loader = PyPDFLoader(pdf_path)
+    documents = loader.load()
+    splitter = get_text_splitter()
+    chunks = splitter.split_documents(documents)
+
+    if chunks:
+        vectorstore.add_documents(chunks)
+        try:
+            os.makedirs(vectorstore_dir, exist_ok=True)
+            vectorstore.save_local(vectorstore_dir)
+        except Exception as e:
+            print(f"Warning: Could not save updated vectorstore: {e}")
+
+    return len(documents), len(chunks)
+
+
+def get_llm_model(api_key: Optional[str] = None) -> ChatGoogleGenerativeAI:
+    """
+    Initializes ChatGoogleGenerativeAI using the exact parameters from notebook:
+    model='gemini-3.7-flash', temperature=0.7, max_tokens=500.
+    """
+    resolved_key = (
+        api_key
+        or os.getenv("LLM_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+    )
+    if not resolved_key:
+        raise ValueError("Missing Google GenAI API Key. Please provide LLM_API_KEY.")
+
+    return ChatGoogleGenerativeAI(
+        model="gemini-3.7-flash",
+        google_api_key=resolved_key,
+        temperature=0.7,
+        max_tokens=500
+    )
+
+
+def rag_chain(question: str, retriever: Any, llm_model: ChatGoogleGenerativeAI) -> Dict[str, Any]:
+    """
+    Exact RAG Chain from notebook:
+    Retrieves top 3 docs, formats context, invokes RAG_PROMPT with llm_model.
+    Preserves exact output format and returns sources for UI citation.
+    """
+    docs = retriever.invoke(question)
+    context = foramt_docs(docs)
+    chain = RAG_PROMPT | llm_model | StrOutputParser()
+    answer = chain.invoke({"context": context, "question": question})
+    return {"answer": answer, "sources": docs}
+
+
+def ask_bot(question: str, retriever: Any, llm_model: ChatGoogleGenerativeAI) -> Dict[str, Any]:
+    """
+    Exact Guardrail + RAG implementation from notebook:
+    Evaluates GUARDIAL_PROMPT to classify IN_SCOPE vs OUT_OF_SCOPE.
+    Returns REFUSAL_MESSAGE if OUT_OF_SCOPE; otherwise invokes rag_chain.
+    """
+    guardial_chain = GUARDIAL_PROMPT | llm_model | StrOutputParser()
+    verdict = guardial_chain.invoke({"question": question}).strip().upper()
+
+    if "OUT_OF_SCOPE" in verdict:
+        return {
+            "answer": REFUSAL_MESSAGE,
+            "sources": [],
+            "verdict": "OUT_OF_SCOPE"
+        }
+
+    result = rag_chain(question, retriever, llm_model)
+    result["verdict"] = "IN_SCOPE"
+    return result
+

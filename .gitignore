@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 *.env
+.streamlit/secrets.toml
+uploads/
 
 # Python & Jupyter
 __pycache__/
