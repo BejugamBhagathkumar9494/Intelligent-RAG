@@ -7,8 +7,13 @@ Supports ultra-fast free Groq models (openai/gpt-oss-120b) and Google GenAI.
 
 import os
 import shutil
-import streamlit as st
 from typing import List, Dict, Any
+from dotenv import load_dotenv
+
+# Ensure environment variables are loaded
+load_dotenv(override=True)
+
+import streamlit as st
 
 # Import exact existing RAG pipeline
 import rag_pipeline
@@ -290,31 +295,31 @@ if "pending_query" not in st.session_state:
 # -----------------------------------------------------------------------------
 def get_provider_and_key(selected_provider: str) -> tuple[str, str]:
     """Resolves provider and API key with fallback chain."""
-    if selected_provider == "Groq":
-        # Check custom sidebar input
+    if "Groq" in selected_provider or selected_provider.lower() == "groq":
+        # 1. Custom sidebar input
         if "custom_groq_key" in st.session_state and st.session_state.custom_groq_key.strip():
             return "groq", st.session_state.custom_groq_key.strip()
-        # Check Streamlit Cloud Secrets
+        # 2. Streamlit Cloud Secrets
         try:
-            if "GROQ_API_KEY" in st.secrets:
-                return "groq", st.secrets["GROQ_API_KEY"]
+            if "GROQ_API_KEY" in st.secrets and st.secrets["GROQ_API_KEY"].strip():
+                return "groq", st.secrets["GROQ_API_KEY"].strip()
         except Exception:
             pass
-        # Check .env / os.getenv
-        key = os.getenv("GROQ_API_KEY", "")
-        return "groq", key
+        # 3. Environment variables / .env
+        env_key = os.getenv("GROQ_API_KEY", "").strip()
+        return "groq", env_key
     else:
         # Google GenAI
         if "custom_gemini_key" in st.session_state and st.session_state.custom_gemini_key.strip():
             return "google-genai", st.session_state.custom_gemini_key.strip()
         try:
-            if "LLM_API_KEY" in st.secrets:
-                return "google-genai", st.secrets["LLM_API_KEY"]
-            if "GOOGLE_API_KEY" in st.secrets:
-                return "google-genai", st.secrets["GOOGLE_API_KEY"]
+            if "LLM_API_KEY" in st.secrets and st.secrets["LLM_API_KEY"].strip():
+                return "google-genai", st.secrets["LLM_API_KEY"].strip()
+            if "GOOGLE_API_KEY" in st.secrets and st.secrets["GOOGLE_API_KEY"].strip():
+                return "google-genai", st.secrets["GOOGLE_API_KEY"].strip()
         except Exception:
             pass
-        key = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
+        key = (os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
         return "google-genai", key
 
 
@@ -350,15 +355,11 @@ with st.sidebar:
     # B. LLM Provider Selection & Configuration
     st.markdown("### ⚙️ LLM Provider")
     
-    # Default to Groq if Groq key exists in env/secrets
-    has_groq_key = bool(os.getenv("GROQ_API_KEY"))
     provider_options = ["Groq (Free & Fast)", "Google GenAI (Gemini)"]
-    default_index = 0 if has_groq_key else 1
-
     provider_choice = st.selectbox(
         "Inference Engine",
         options=provider_options,
-        index=default_index,
+        index=0,
         help="Select between Groq high-speed free inference or Google Gemini."
     )
     is_groq = "Groq" in provider_choice
@@ -384,16 +385,16 @@ with st.sidebar:
             unsafe_allow_html=True
         )
 
-    # Allow key override in UI
-    key_field_name = "Groq API Key (gsk_...)" if is_groq else "Gemini API Key"
+    # Allow key entry/override in UI
+    key_field_name = "Groq API Key" if is_groq else "Gemini API Key"
     state_key_name = "custom_groq_key" if is_groq else "custom_gemini_key"
-    
+
     api_key_input = st.text_input(
         key_field_name,
         value=st.session_state.get(state_key_name, ""),
         type="password",
-        placeholder=f"Enter {key_field_name}...",
-        help="Reads from .env or Streamlit Secrets by default. Provide key here to override."
+        placeholder="Paste your key here...",
+        help="Reads from .env or Streamlit Secrets. Paste your API key here to activate inference instantly."
     )
     if api_key_input != st.session_state.get(state_key_name, ""):
         st.session_state[state_key_name] = api_key_input
@@ -607,8 +608,9 @@ if active_query:
     if not current_key:
         provider_name = "Groq" if is_groq else "Google Gemini"
         error_msg = (
-            f"⚠️ **{provider_name} API Key Missing**: Please provide your {provider_name} API Key "
-            f"in the left sidebar configuration, or configure it in your `.env` / Streamlit Secrets."
+            f"⚠️ **{provider_name} API Key Missing**: Please paste your {provider_name} API Key "
+            f"in the **{key_field_name}** box in the left sidebar, or configure `GROQ_API_KEY` "
+            f"in your **Streamlit Cloud Secrets** (`share.streamlit.io` ➔ App Settings ➔ Secrets)."
         )
         with st.chat_message("assistant", avatar="🏢"):
             st.error(error_msg)

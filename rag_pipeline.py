@@ -160,7 +160,6 @@ def get_llm_model(
     Initializes ChatGroq or ChatGoogleGenerativeAI.
     Defaults to Groq (openai/gpt-oss-120b) when Groq key is present.
     """
-    # Detect provider based on key format or setting
     groq_env_key = os.getenv("GROQ_API_KEY")
     gemini_env_key = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
@@ -176,7 +175,7 @@ def get_llm_model(
     if selected_provider.lower() == "groq":
         key = api_key or groq_env_key
         if not key:
-            raise ValueError("Missing Groq API Key. Please provide GROQ_API_KEY.")
+            raise ValueError("Missing Groq API Key. Please provide GROQ_API_KEY in secrets, .env, or sidebar.")
         model = model_name or os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)
         return ChatGroq(
             model=model,
