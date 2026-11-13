@@ -274,7 +274,7 @@ def load_cached_vectorstore():
 # Initialize Vector Store
 with st.spinner("Initializing Enterprise HR Knowledge Base & FAISS Vector Index..."):
     vectorstore, corpus_doc_count = load_cached_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
 
 # -----------------------------------------------------------------------------
@@ -402,13 +402,22 @@ with st.sidebar:
 
     # C. Pipeline Specs Badges
     st.markdown("### 🧩 Pipeline Specs")
+    top_k = st.slider(
+        "Context Chunks (Top-K)",
+        min_value=3,
+        max_value=8,
+        value=5,
+        help="Number of policy chunks retrieved for answering. Top-K=5 ensures broad questions like 'tell me leave policy' retrieve complete policy tables."
+    )
+    retriever = vectorstore.as_retriever(search_kwargs={"k": top_k})
+
     st.markdown(
         f"""
         <div>
             <span class="spec-badge">Engine: {'Groq' if is_groq else 'Google GenAI'}</span>
             <span class="spec-badge">Model: {selected_model}</span>
             <span class="spec-badge">Embed: MiniLM-L6-v2</span>
-            <span class="spec-badge">Vector DB: FAISS (top-k=3)</span>
+            <span class="spec-badge">Vector DB: FAISS (top-k={top_k})</span>
             <span class="spec-badge">Chunk: 800 (overlap: 100)</span>
             <span class="spec-badge">Guardrail: Active</span>
         </div>

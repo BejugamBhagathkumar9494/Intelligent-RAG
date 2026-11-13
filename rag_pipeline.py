@@ -28,6 +28,7 @@ load_dotenv(override=True)
 DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
 DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
+DEFAULT_TOP_K = 5
 CORPUS_PATH = "./zyro-dynamics-hr-corpus"
 VECTORSTORE_DIR = "./vectorstore/faiss_index"
 
