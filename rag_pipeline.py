@@ -1,38 +1,52 @@
 """
 rag_pipeline.py - Core RAG and Guardrail Pipeline for Zyro Dynamics HR Assistant.
 
-Preserves the exact architecture, retrieval logic, prompts, chunking, and guardrails.
-Supports high-speed free Groq models (openai/gpt-oss-120b, openai/gpt-oss-20b)
-as well as Google GenAI (gemini-3.7-flash).
+Designed to be simple, robust, and beginner-friendly for B.Tech AI students:
+1. Loads all 11 HR policy PDFs using straightforward pypdf extraction.
+2. Chunks documents using RecursiveCharacterTextSplitter (chunk_size=800, overlap=100).
+3. Indexes chunks into FAISS with sentence-transformers/all-MiniLM-L6-v2 embeddings.
+4. Auto-detects changes in the corpus using a fingerprint so outdated indexes are never loaded.
+5. Filters out distant, irrelevant citations so answers and citations stay 100% accurate.
+6. Evaluates safety guardrails (IN_SCOPE vs OUT_OF_SCOPE).
+7. Synthesizes grounded answers using Groq (free, high-speed) or Google Gemini.
 """
 
 import os
 from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 
-from langchain_community.document_loaders import PyPDFDirectoryLoader, PyPDFLoader
+# Document loading and processing
+from pypdf import PdfReader
+from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# Embeddings and Vector Store
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+
+# LangChain prompts and LLM interfaces
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-
-# LLM Providers
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Load environment variables
+# Load local environment variables from .env
 load_dotenv(override=True)
 
-# --- Original Notebook Constants ---
+# -----------------------------------------------------------------------------
+# Configuration Constants
+# -----------------------------------------------------------------------------
+CORPUS_PATH = "./zyro-dynamics-hr-corpus"
+VECTORSTORE_DIR = "./vectorstore/faiss_index"
+
 DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
 DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
 DEFAULT_TOP_K = 5
-CORPUS_PATH = "./zyro-dynamics-hr-corpus"
-VECTORSTORE_DIR = "./vectorstore/faiss_index"
 
-# --- RAG Prompt Template (Optimized for thorough, informative policy answers) ---
+# -----------------------------------------------------------------------------
+# Prompts
+# -----------------------------------------------------------------------------
 RAG_PROMPT = ChatPromptTemplate.from_template(
     """You are an HR assistant for Zyro Dynamics. Based on the company HR policy context provided below, provide a clear, helpful, comprehensive, and detailed answer to the employee's inquiry. Summarize and explain all relevant rules, entitlements, procedures, conditions, and tables found in the context. Only if the context contains no relevant information at all, state that you do not have that information.
 
@@ -62,30 +76,104 @@ REFUSAL_MESSAGE = (
 )
 
 
-def foramt_docs(docs: List[Any]) -> str:
-    """Original doc formatting function from notebook."""
-    return ".\n\n".join(d.page_content for d in docs)
+# -----------------------------------------------------------------------------
+# Step 1: PDF Document Loading
+# -----------------------------------------------------------------------------
+def load_all_pdfs(corpus_path: str = CORPUS_PATH) -> List[Document]:
+    """
+    Loads all PDF documents from the given folder using pypdf.
+    - Loops through every .pdf file in alphabetical order.
+    - Extracts text page by page.
+    - Attaches clean metadata: 'source' (filename only) and 'page' (0-indexed).
+    - Gracefully skips blank or unreadable pages.
+    """
+    if not os.path.exists(corpus_path):
+        print(f"Warning: Corpus directory '{corpus_path}' does not exist.")
+        return []
+
+    # Get all PDF filenames sorted alphabetically
+    pdf_filenames = sorted([
+        f for f in os.listdir(corpus_path)
+        if f.lower().endswith(".pdf")
+    ])
+
+    loaded_documents = []
+
+    for filename in pdf_filenames:
+        file_path = os.path.join(corpus_path, filename)
+        try:
+            reader = PdfReader(file_path)
+            for page_index, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                # Only include pages that actually have readable text
+                if text.strip():
+                    doc = Document(
+                        page_content=text,
+                        metadata={
+                            "source": filename,       # Clean filename (e.g. 04_Code_of_Conduct.pdf)
+                            "page": page_index        # 0-indexed page number
+                        }
+                    )
+                    loaded_documents.append(doc)
+        except Exception as error:
+            print(f"Error reading {filename}: {error}")
+
+    print(f"Successfully loaded {len(loaded_documents)} pages from {len(pdf_filenames)} PDF files.")
+    return loaded_documents
 
 
-def get_embedding_model() -> HuggingFaceEmbeddings:
-    """Initializes the exact HuggingFace embedding model from notebook."""
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
+# Alias for backward compatibility
+get_corpus_documents = load_all_pdfs
 
 
+# -----------------------------------------------------------------------------
+# Step 2: Document Chunking
+# -----------------------------------------------------------------------------
 def get_text_splitter() -> RecursiveCharacterTextSplitter:
-    """Initializes the exact RecursiveCharacterTextSplitter from notebook."""
+    """Creates the text splitter with chunk_size=800 and chunk_overlap=100."""
     return RecursiveCharacterTextSplitter(
         chunk_size=800,
         chunk_overlap=100
     )
 
 
-def get_corpus_documents(corpus_path: str = CORPUS_PATH) -> List[Any]:
-    """Loads PDF documents from the corpus directory using PyPDFDirectoryLoader."""
-    loader = PyPDFDirectoryLoader(corpus_path)
-    return loader.load()
+def chunk_documents(documents: List[Document]) -> List[Document]:
+    """Splits loaded pages into chunks while preserving metadata."""
+    splitter = get_text_splitter()
+    chunks = splitter.split_documents(documents)
+    print(f"Split {len(documents)} document pages into {len(chunks)} text chunks.")
+    return chunks
+
+
+# -----------------------------------------------------------------------------
+# Step 3: Embeddings
+# -----------------------------------------------------------------------------
+def get_embedding_model() -> HuggingFaceEmbeddings:
+    """Loads sentence-transformers/all-MiniLM-L6-v2 embeddings model."""
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Step 4: FAISS Vector Database Management with Corpus Fingerprinting
+# -----------------------------------------------------------------------------
+def get_corpus_fingerprint(corpus_path: str = CORPUS_PATH) -> str:
+    """
+    Computes a fingerprint of all PDF files in the corpus (filenames and file sizes).
+    Used to verify if the saved FAISS index on disk matches the current PDFs.
+    """
+    if not os.path.exists(corpus_path):
+        return ""
+    
+    pdf_files = sorted([f for f in os.listdir(corpus_path) if f.lower().endswith(".pdf")])
+    fingerprint_entries = []
+    for f in pdf_files:
+        full_path = os.path.join(corpus_path, f)
+        file_size = os.path.getsize(full_path)
+        fingerprint_entries.append(f"{f}:{file_size}")
+    
+    return "|".join(fingerprint_entries)
 
 
 def load_or_build_vectorstore(
@@ -94,41 +182,64 @@ def load_or_build_vectorstore(
     embedding_model: Optional[HuggingFaceEmbeddings] = None
 ) -> Tuple[FAISS, int]:
     """
-    Loads persisted FAISS vectorstore if available; otherwise builds from corpus documents
-    using the exact notebook pipeline and persists it for fast subsequent reloads.
-    Returns (vectorstore, document_count).
+    Loads persisted FAISS vectorstore if available and matches the corpus fingerprint.
+    If the index is missing, outdated, or corrupted, it automatically rebuilds from
+    the 11 PDF files and persists the updated index and fingerprint to disk.
+    
+    Returns:
+        (vectorstore, number_of_pdf_files)
     """
     if embedding_model is None:
         embedding_model = get_embedding_model()
 
     index_file = os.path.join(vectorstore_dir, "index.faiss")
     pkl_file = os.path.join(vectorstore_dir, "index.pkl")
+    fingerprint_file = os.path.join(vectorstore_dir, "fingerprint.txt")
 
-    if os.path.exists(index_file) and os.path.exists(pkl_file):
+    current_fingerprint = get_corpus_fingerprint(corpus_path)
+    corpus_pdf_count = len([f for f in os.listdir(corpus_path) if f.lower().endswith(".pdf")]) if os.path.exists(corpus_path) else 0
+
+    # 1. Check if an existing index on disk is valid and up-to-date
+    if os.path.exists(index_file) and os.path.exists(pkl_file) and os.path.exists(fingerprint_file):
         try:
-            vectorstore = FAISS.load_local(
-                vectorstore_dir,
-                embedding_model,
-                allow_dangerous_deserialization=True
-            )
-            corpus_files = [f for f in os.listdir(corpus_path) if f.lower().endswith(".pdf")] if os.path.exists(corpus_path) else []
-            return vectorstore, len(corpus_files)
-        except Exception as e:
-            print(f"Error loading local index, rebuilding: {e}")
+            with open(fingerprint_file, "r", encoding="utf-8") as fp:
+                saved_fingerprint = fp.read().strip()
 
-    # Build from scratch
-    documents = get_corpus_documents(corpus_path)
-    splitter = get_text_splitter()
-    chunks = splitter.split_documents(documents)
+            if saved_fingerprint == current_fingerprint and current_fingerprint != "":
+                # The saved index perfectly matches the current PDFs
+                vectorstore = FAISS.load_local(
+                    vectorstore_dir,
+                    embedding_model,
+                    allow_dangerous_deserialization=True
+                )
+                print("Loaded valid, up-to-date FAISS vectorstore from disk.")
+                return vectorstore, corpus_pdf_count
+            else:
+                print("Corpus files have changed! Rebuilding FAISS vectorstore...")
+        except Exception as load_err:
+            print(f"Could not load existing index ({load_err}). Rebuilding from scratch...")
+
+    # 2. Build index fresh from all PDFs in the corpus
+    print("Building FAISS index from corpus documents...")
+    documents = load_all_pdfs(corpus_path)
+    chunks = chunk_documents(documents)
+    
+    if not chunks:
+        raise ValueError(f"No documents found to index in '{corpus_path}'!")
+
     vectorstore = FAISS.from_documents(chunks, embedding_model)
 
+    # 3. Save new index and fingerprint to disk
     try:
         os.makedirs(vectorstore_dir, exist_ok=True)
         vectorstore.save_local(vectorstore_dir)
-    except Exception as e:
-        print(f"Could not persist vectorstore to disk: {e}")
+        with open(fingerprint_file, "w", encoding="utf-8") as fp:
+            fp.write(current_fingerprint)
+        print("Persisted rebuilt FAISS index and corpus fingerprint to disk.")
+    except Exception as save_err:
+        print(f"Warning: Could not save vectorstore to disk: {save_err}")
 
-    return vectorstore, len(documents)
+    return vectorstore, corpus_pdf_count
 
 
 def add_pdf_to_vectorstore(
@@ -137,34 +248,48 @@ def add_pdf_to_vectorstore(
     vectorstore_dir: str = VECTORSTORE_DIR
 ) -> Tuple[int, int]:
     """
-    Processes an uploaded PDF using the exact document loader and chunking logic,
-    and appends it to the FAISS vectorstore.
-    Returns (num_pages_loaded, num_chunks_created).
+    Extracts text from an uploaded PDF, chunks it, and appends to the vector database.
+    Returns (pages_loaded, chunks_created).
     """
-    loader = PyPDFLoader(pdf_path)
-    documents = loader.load()
-    splitter = get_text_splitter()
-    chunks = splitter.split_documents(documents)
+    reader = PdfReader(pdf_path)
+    filename = os.path.basename(pdf_path)
+    docs = []
 
-    if chunks:
-        vectorstore.add_documents(chunks)
-        try:
-            os.makedirs(vectorstore_dir, exist_ok=True)
-            vectorstore.save_local(vectorstore_dir)
-        except Exception as e:
-            print(f"Warning: Could not save updated vectorstore: {e}")
+    for page_idx, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        if text.strip():
+            docs.append(Document(
+                page_content=text,
+                metadata={"source": filename, "page": page_idx}
+            ))
 
-    return len(documents), len(chunks)
+    if not docs:
+        return 0, 0
+
+    chunks = chunk_documents(docs)
+    vectorstore.add_documents(chunks)
+
+    # Save updated vectorstore
+    try:
+        os.makedirs(vectorstore_dir, exist_ok=True)
+        vectorstore.save_local(vectorstore_dir)
+    except Exception as e:
+        print(f"Warning: Could not save updated vectorstore: {e}")
+
+    return len(docs), len(chunks)
 
 
+# -----------------------------------------------------------------------------
+# Step 5: LLM Model Initialization
+# -----------------------------------------------------------------------------
 def get_llm_model(
     provider: Optional[str] = None,
     api_key: Optional[str] = None,
     model_name: Optional[str] = None
 ) -> Any:
     """
-    Initializes ChatGroq or ChatGoogleGenerativeAI.
-    Defaults to Groq (openai/gpt-oss-120b) when Groq key is present.
+    Initializes ChatGroq or ChatGoogleGenerativeAI with robust key resolution.
+    Defaults to Groq (openai/gpt-oss-120b) for fast, free inference.
     """
     groq_env_key = os.getenv("GROQ_API_KEY")
     gemini_env_key = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
@@ -181,7 +306,7 @@ def get_llm_model(
     if selected_provider.lower() == "groq":
         key = api_key or groq_env_key
         if not key:
-            raise ValueError("Missing Groq API Key. Please provide GROQ_API_KEY in secrets, .env, or sidebar.")
+            raise ValueError("Missing Groq API Key. Please provide GROQ_API_KEY.")
         model = model_name or os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)
         return ChatGroq(
             model=model,
@@ -202,26 +327,112 @@ def get_llm_model(
         )
 
 
-def rag_chain(question: str, retriever: Any, llm_model: Any) -> Dict[str, Any]:
+# -----------------------------------------------------------------------------
+# Step 6: Citation Filtering & RAG Chain
+# -----------------------------------------------------------------------------
+def filter_relevant_chunks(
+    scored_docs: List[Tuple[Document, float]],
+    max_score_delta: float = 0.20
+) -> List[Document]:
     """
-    Exact RAG Chain:
-    Retrieves top docs, formats context, invokes RAG_PROMPT with llm_model.
+    Filters out chunks that are significantly less relevant than the top match.
+    This eliminates irrelevant citations (e.g. POSH citations when asking about Code of Conduct).
+    
+    Logic:
+    1. The first document is the most relevant (has the lowest L2 distance).
+    2. Any chunk from the exact same document is kept.
+    3. Any chunk from other documents is only kept if its score is very close
+       to the best match (within max_score_delta) and overall distance is acceptable.
     """
-    docs = retriever.invoke(question)
-    context = foramt_docs(docs)
+    if not scored_docs:
+        return []
+
+    best_doc, best_score = scored_docs[0]
+    best_source = best_doc.metadata.get("source", "")
+
+    filtered_docs = []
+    for doc, score in scored_docs:
+        doc_source = doc.metadata.get("source", "")
+        
+        # Keep if from the same document as top match
+        if doc_source == best_source:
+            filtered_docs.append(doc)
+        # Keep other documents only if score is closely related
+        elif (score - best_score) <= max_score_delta and score <= 1.15:
+            filtered_docs.append(doc)
+
+    # Fallback to top match if filter emptied the list
+    if not filtered_docs:
+        filtered_docs = [best_doc]
+
+    return filtered_docs
+
+
+def format_docs(docs: List[Document]) -> str:
+    """Combines retrieved document contents into a single context string."""
+    return "\n\n".join(d.page_content for d in docs)
+
+
+# Alias for backward compatibility
+foramt_docs = format_docs
+
+
+def rag_chain(
+    question: str,
+    vectorstore_or_retriever: Any,
+    llm_model: Any,
+    top_k: int = DEFAULT_TOP_K
+) -> Dict[str, Any]:
+    """
+    Executes the RAG pipeline:
+    1. Retrieves top_k chunks with similarity scores.
+    2. Filters out irrelevant citations using score-gap filtering.
+    3. Formats context.
+    4. Generates comprehensive grounded response with the LLM.
+    """
+    # Handle either vectorstore or retriever object
+    if hasattr(vectorstore_or_retriever, "similarity_search_with_score"):
+        vs = vectorstore_or_retriever
+    elif hasattr(vectorstore_or_retriever, "vectorstore"):
+        vs = vectorstore_or_retriever.vectorstore
+    else:
+        vs = vectorstore_or_retriever
+
+    # 1. Similarity search with score
+    scored_results = vs.similarity_search_with_score(question, k=top_k)
+
+    # 2. Filter irrelevant chunks
+    filtered_docs = filter_relevant_chunks(scored_results, max_score_delta=0.20)
+
+    # 3. Format context string
+    context = format_docs(filtered_docs)
+
+    # 4. Generate answer with LLM
     chain = RAG_PROMPT | llm_model | StrOutputParser()
     answer = chain.invoke({"context": context, "question": question})
-    return {"answer": answer, "sources": docs}
+
+    return {
+        "answer": answer,
+        "sources": filtered_docs
+    }
 
 
-def ask_bot(question: str, retriever: Any, llm_model: Any) -> Dict[str, Any]:
+# -----------------------------------------------------------------------------
+# Step 7: Guardrail Scope Classification & ask_bot
+# -----------------------------------------------------------------------------
+def ask_bot(
+    question: str,
+    vectorstore_or_retriever: Any,
+    llm_model: Any,
+    top_k: int = DEFAULT_TOP_K
+) -> Dict[str, Any]:
     """
-    Exact Guardrail + RAG implementation:
-    Evaluates GUARDIAL_PROMPT to classify IN_SCOPE vs OUT_OF_SCOPE.
-    Returns REFUSAL_MESSAGE if OUT_OF_SCOPE; otherwise invokes rag_chain.
+    Evaluates guardrail prompt first:
+    - If question is OUT_OF_SCOPE, immediately returns REFUSAL_MESSAGE.
+    - If IN_SCOPE, executes the RAG pipeline.
     """
-    guardial_chain = GUARDIAL_PROMPT | llm_model | StrOutputParser()
-    verdict = guardial_chain.invoke({"question": question}).strip().upper()
+    guardrail_chain = GUARDIAL_PROMPT | llm_model | StrOutputParser()
+    verdict = guardrail_chain.invoke({"question": question}).strip().upper()
 
     if "OUT_OF_SCOPE" in verdict:
         return {
@@ -230,6 +441,6 @@ def ask_bot(question: str, retriever: Any, llm_model: Any) -> Dict[str, Any]:
             "verdict": "OUT_OF_SCOPE"
         }
 
-    result = rag_chain(question, retriever, llm_model)
+    result = rag_chain(question, vectorstore_or_retriever, llm_model, top_k=top_k)
     result["verdict"] = "IN_SCOPE"
     return result

@@ -639,8 +639,8 @@ if active_query:
                         api_key=current_key,
                         model_name=selected_model
                     )
-                    # Invoke exact notebook ask_bot function
-                    rag_result = ask_bot(active_query, retriever, llm)
+                    # Invoke ask_bot function with vectorstore and selected top_k
+                    rag_result = ask_bot(active_query, vectorstore, llm, top_k=top_k)
                     
                     answer_text = rag_result.get("answer", "")
                     sources = rag_result.get("sources", [])

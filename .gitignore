@@ -40,6 +40,7 @@ env.bak/
 venv.bak/
 
 # Vector Stores & Caches (RAG)
+vectorstore/
 chroma_db/
 chroma/
 *.chromadb
