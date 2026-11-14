@@ -16,7 +16,9 @@ load_dotenv(override=True)
 import streamlit as st
 
 # Import exact existing RAG pipeline
+import importlib
 import rag_pipeline
+importlib.reload(rag_pipeline)
 from rag_pipeline import (
     CORPUS_PATH,
     VECTORSTORE_DIR,
@@ -639,8 +641,8 @@ if active_query:
                         api_key=current_key,
                         model_name=selected_model
                     )
-                    # Invoke ask_bot function with vectorstore and selected top_k
-                    rag_result = ask_bot(active_query, vectorstore, llm, top_k=top_k)
+                    # Invoke ask_bot with retriever and llm
+                    rag_result = ask_bot(active_query, retriever, llm)
                     
                     answer_text = rag_result.get("answer", "")
                     sources = rag_result.get("sources", [])

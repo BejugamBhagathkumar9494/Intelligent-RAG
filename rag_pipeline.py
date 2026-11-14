@@ -379,9 +379,11 @@ foramt_docs = format_docs
 
 def rag_chain(
     question: str,
-    vectorstore_or_retriever: Any,
-    llm_model: Any,
-    top_k: int = DEFAULT_TOP_K
+    vectorstore_or_retriever: Any = None,
+    llm_model: Any = None,
+    top_k: int = DEFAULT_TOP_K,
+    *args,
+    **kwargs
 ) -> Dict[str, Any]:
     """
     Executes the RAG pipeline:
@@ -390,24 +392,38 @@ def rag_chain(
     3. Formats context.
     4. Generates comprehensive grounded response with the LLM.
     """
-    # Handle either vectorstore or retriever object
-    if hasattr(vectorstore_or_retriever, "similarity_search_with_score"):
+    # 1. Determine top_k (from kwargs, retriever search_kwargs, or parameter)
+    k = top_k
+    if "top_k" in kwargs:
+        k = kwargs["top_k"]
+    elif hasattr(vectorstore_or_retriever, "search_kwargs") and isinstance(vectorstore_or_retriever.search_kwargs, dict):
+        if "k" in vectorstore_or_retriever.search_kwargs:
+            k = vectorstore_or_retriever.search_kwargs["k"]
+
+    # 2. Resolve vectorstore
+    if vectorstore_or_retriever is None:
+        vs, _ = load_or_build_vectorstore()
+    elif hasattr(vectorstore_or_retriever, "similarity_search_with_score"):
         vs = vectorstore_or_retriever
     elif hasattr(vectorstore_or_retriever, "vectorstore"):
         vs = vectorstore_or_retriever.vectorstore
     else:
         vs = vectorstore_or_retriever
 
-    # 1. Similarity search with score
-    scored_results = vs.similarity_search_with_score(question, k=top_k)
+    # 3. Resolve LLM model
+    if llm_model is None:
+        llm_model = get_llm_model()
 
-    # 2. Filter irrelevant chunks
+    # 4. Similarity search with score
+    scored_results = vs.similarity_search_with_score(question, k=k)
+
+    # 5. Filter irrelevant chunks
     filtered_docs = filter_relevant_chunks(scored_results, max_score_delta=0.20)
 
-    # 3. Format context string
+    # 6. Format context string
     context = format_docs(filtered_docs)
 
-    # 4. Generate answer with LLM
+    # 7. Generate answer with LLM
     chain = RAG_PROMPT | llm_model | StrOutputParser()
     answer = chain.invoke({"context": context, "question": question})
 
@@ -422,15 +438,30 @@ def rag_chain(
 # -----------------------------------------------------------------------------
 def ask_bot(
     question: str,
-    vectorstore_or_retriever: Any,
-    llm_model: Any,
-    top_k: int = DEFAULT_TOP_K
+    vectorstore_or_retriever: Any = None,
+    llm_model: Any = None,
+    top_k: int = DEFAULT_TOP_K,
+    *args,
+    **kwargs
 ) -> Dict[str, Any]:
     """
     Evaluates guardrail prompt first:
     - If question is OUT_OF_SCOPE, immediately returns REFUSAL_MESSAGE.
     - If IN_SCOPE, executes the RAG pipeline.
+
+    Accepts any calling convention:
+    - ask_bot(question)
+    - ask_bot(question, retriever, llm)
+    - ask_bot(question, vectorstore, llm)
+    - ask_bot(question, retriever, llm, top_k=5)
     """
+    k = top_k
+    if "top_k" in kwargs:
+        k = kwargs["top_k"]
+
+    if llm_model is None:
+        llm_model = get_llm_model()
+
     guardrail_chain = GUARDIAL_PROMPT | llm_model | StrOutputParser()
     verdict = guardrail_chain.invoke({"question": question}).strip().upper()
 
@@ -441,6 +472,6 @@ def ask_bot(
             "verdict": "OUT_OF_SCOPE"
         }
 
-    result = rag_chain(question, vectorstore_or_retriever, llm_model, top_k=top_k)
+    result = rag_chain(question, vectorstore_or_retriever, llm_model, top_k=k, *args, **kwargs)
     result["verdict"] = "IN_SCOPE"
     return result
